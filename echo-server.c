@@ -34,11 +34,14 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#include "client_sensor.h"
+
 #define SERVER_PORT  4242
 #define MAX_BUF_SIZE 1280	/* min IPv6 MTU, the actual data is smaller */
 #define MAX_TIMEOUT  3		/* in seconds */
 
 static bool do_reverse;
+static int recv_len;
 
 static inline void reverse(unsigned char *buf, int len)
 {
@@ -137,14 +140,15 @@ static int receive(int fd, unsigned char *buf, int buflen,
 	int ret;
 
 	if (proto == IPPROTO_UDP) {
-		printf("buf before rcv: %ld\n", sizeof(buf));
+                // important line //
 		ret = recvfrom(fd, buf, buflen, 0, addr, addrlen);
-		printf("buf after rcv: %ld\n", sizeof(buf));
-		printf("buf = ");
-		for(long unsigned int i = 0; i< MAX_BUF_SIZE; i++)
-			printf("%c", buf[i]);
-		printf("%ld %ld", sizeof(buf), sizeof(unsigned char));
+		recv_len = ret;
 		printf("\n");
+		printf("buf = ");
+		for(long unsigned int i = 0; i< recv_len; i++)
+			printf("%c", buf[i]);
+		printf("\n");
+		printf("==================\n");
 		if (ret < 0) {
 			perror("recv");
 			return ret;
@@ -193,26 +197,39 @@ static int reply(int fd, unsigned char *buf, int buflen,
 }
 
 static int udp_receive_and_reply(fd_set *rfds, int fd_recv, int fd_send,
-				 unsigned char *buf, int buflen, int proto,
+				 unsigned char *buf, unsigned char* reply_buf, int buflen, int proto,
 				 bool do_reverse)
 {
+	printf("Enter udp _receive and reply \n");
 	if (FD_ISSET(fd_recv, rfds)) {
 		struct sockaddr_in6 from = { 0 };
 		socklen_t fromlen = sizeof(from);
 		int ret;
-		printf("buflen : %d\n", buflen);
-		printf("buf before inside both func: %ld\n", sizeof(buf));
+		int recv_len;
+
+		// receive
 		ret = receive(fd_recv, buf, buflen,
 			      (struct sockaddr *)&from, &fromlen, proto);
-		printf("buf after inside both func : %ld\n", sizeof(buf));
+		recv_len = ret;
+		printf("Value receive : %d\n", ret);
 		if (ret < 0)
 			return ret;
 
-		if (do_reverse)
-			reverse(buf, ret);
+		// process message
+		ret = process_recv(buf);
+		printf("Value process receive : %d\n", ret);
+		if (ret < 0)
+			return ret;
 
-		ret = reply(fd_send, buf, ret,
+		ret = process_reply(reply_buf);
+		printf("Value process reply : %d\n", ret);
+		if (ret < 0)
+			return ret;
+
+		// reply
+		ret = reply(fd_send, reply_buf, recv_len,
 			    (struct sockaddr *)&from, fromlen, proto);
+		printf("Value reply: %d\n", ret);
 		if (ret < 0)
 			return ret;
 
@@ -224,19 +241,31 @@ static int udp_receive_and_reply(fd_set *rfds, int fd_recv, int fd_send,
 
 static int tcp_receive_and_reply(fd_set *rfds, fd_set *errfds,
 				 int fd_recv, int fd_send,
-				 unsigned char *buf, int buflen, int proto)
+				 unsigned char *buf, unsigned char *reply_buf , int buflen, int proto)
 {
 	struct sockaddr_in6 from = { 0 };
 	socklen_t fromlen = sizeof(from);
 	int ret = 0;
 
 	if (FD_ISSET(fd_recv, rfds)) {
+
+		// receive
 		ret = receive(fd_recv, buf, buflen,
 			      (struct sockaddr *)&from, &fromlen, proto);
 		if (ret < 0)
 			return ret;
 
-		ret = reply(fd_send, buf, ret,
+		// process message
+		ret = process_recv(buf);
+		if (ret < 0)
+			return ret;
+
+		ret = process_reply(reply_buf);
+		if (ret < 0)
+			return ret;
+
+		// reply
+		ret = reply(fd_send, reply_buf, ret,
 			    (struct sockaddr *)&from, fromlen, proto);
 		if (ret < 0) {
 			return ret;
@@ -386,8 +415,15 @@ int main(int argc, char**argv)
 	struct in_addr mcast4_addr = { 0 };
 	struct sockaddr_in addr4_recv = { 0 }, maddr4 = { 0 };
 	int family;
+	
+	// define buffer here
 	unsigned char buf[MAX_BUF_SIZE];
 	printf("%ld\n", sizeof(buf));
+
+	// Initialized reply buffer to prevent 
+	unsigned char reply_buf[MAX_BUF_SIZE] = "";
+	//
+
 	char addr_buf[INET6_ADDRSTRLEN];
 	const struct in6_addr any = IN6ADDR_ANY_INIT;
 	const char *interface = NULL;
@@ -395,6 +431,9 @@ int main(int argc, char**argv)
 	struct timeval tv = {};
 	int ifindex = -1;
 	int opt = 1;
+
+	// init the sensors
+	init_sensor();
 
 	opterr = 0;
 
@@ -586,30 +625,30 @@ restart:
 		}
 
 		/* Unicast IPv4 */
-		if (udp_receive_and_reply(&rfds, fd4, fd4, buf, sizeof(buf),
+		if (udp_receive_and_reply(&rfds, fd4, fd4, buf, reply_buf, sizeof(buf),
 					  IPPROTO_UDP, do_reverse) < 0)
 			goto restart;
 		printf("buf size: %ld\n", sizeof(buf));
 
 		/* Unicast IPv6 */
-		if (udp_receive_and_reply(&rfds, fd6, fd6, buf, sizeof(buf),
+		if (udp_receive_and_reply(&rfds, fd6, fd6, buf, reply_buf, sizeof(buf),
 					  IPPROTO_UDP, do_reverse) < 0)
 			goto restart;
 
 		/* Multicast IPv4 */
-		if (udp_receive_and_reply(&rfds, fd4m, fd4, buf, sizeof(buf),
+		if (udp_receive_and_reply(&rfds, fd4m, fd4, buf, reply_buf, sizeof(buf),
 					  IPPROTO_UDP, do_reverse) < 0)
 			goto restart;
 
 		/* Multicast IPv6 */
-		if (udp_receive_and_reply(&rfds, fd6m, fd6, buf, sizeof(buf),
+		if (udp_receive_and_reply(&rfds, fd6m, fd6, buf, reply_buf, sizeof(buf),
 					  IPPROTO_UDP, do_reverse) < 0)
 			goto restart;
 
 		/* TCP IPv4 */
 		ret = tcp_receive_and_reply(&rfds, &errfds,
 					    accepted4, accepted4,
-					    buf, sizeof(buf),
+					    buf, reply_buf, sizeof(buf),
 					    IPPROTO_TCP);
 		if (ret < 0)
 			goto restart;
@@ -619,7 +658,7 @@ restart:
 		/* TCP IPv6 */
 		ret = tcp_receive_and_reply(&rfds, &errfds,
 					    accepted6, accepted6,
-					    buf, sizeof(buf),
+					    buf, reply_buf, sizeof(buf),
 					    IPPROTO_TCP);
 		if (ret < 0)
 			goto restart;
@@ -633,6 +672,8 @@ restart:
 	close(fd6m);
 	close(tcp4);
 	close(tcp6);
+
+	clean_up_function();
 
 	printf("\n");
 
