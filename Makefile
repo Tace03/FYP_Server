@@ -6,8 +6,11 @@ tunslip6: tunslip6.o
 echo-client: echo-client.o
 	$(CC) -o $@ $(CFLAGS) $(LIBS) echo-client.c
 
-echo-server: echo-server.o
-	$(CC) -o $@ $(CFLAGS) $(LIBS) echo-server.c
+echo-server: echo-server.o client_sensor.o
+	$(CC) -o $@ $(CFLAGS) $(LIBS) echo-server.c client_sensor.c
+
+echo-server-2: echo-server-2.o
+	$(CC) -o $@ $(CFLAGS) $(LIBS) echo-server-2.c
 
 throughput-client: throughput-client.o
 	$(CC) -o $@ $(CFLAGS) $(LIBS) throughput-client.c
